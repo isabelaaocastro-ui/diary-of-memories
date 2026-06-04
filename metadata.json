@@ -1,0 +1,6 @@
+{
+  "name": "Diary of Memories",
+  "description": "An interactive digital art piece addressing the inability of AI models to truly understand the depth of human sensory experiences and emotional memories.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
