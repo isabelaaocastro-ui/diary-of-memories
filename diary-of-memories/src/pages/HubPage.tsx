@@ -1,105 +1,198 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+
+const NAV_ITEMS = [
+  { label: 'Share a story', path: '/interview' },
+  { label: 'Find a story', path: '/map' },
+  { label: 'About', path: '/about' },
+]
+
+// Which "frame" we're on — controls what's visible
+// 0: blank
+// 1: disclaimer text appears (top-left)
+// 2: big question appears (left body)
+// 3: right-top quote appears
+// 4: nav buttons appear bottom-right
+// hover on button: that button goes black
+type Frame = 0 | 1 | 2 | 3 | 4
 
 export default function HubPage() {
   const navigate = useNavigate()
-  const [visible, setVisible] = useState(false)
+  const [frame, setFrame] = useState<Frame>(0)
+  const [hoveredBtn, setHoveredBtn] = useState<number | null>(null)
 
   useEffect(() => {
-    // Soft fade-in after cinematic intro
-    setTimeout(() => setVisible(true), 100)
+    // Each frame appears 500ms after the previous
+    const timers = [
+      setTimeout(() => setFrame(1), 300),
+      setTimeout(() => setFrame(2), 800),
+      setTimeout(() => setFrame(3), 1300),
+      setTimeout(() => setFrame(4), 1800),
+    ]
+    return () => timers.forEach(clearTimeout)
   }, [])
 
-  const navItems = [
-    { code: '4681 311 279 6806', label: 'GO TO THE EXPERIENCE', path: '/interview' },
-    { code: '41603 3180 1169 22006', label: 'GO TO THE MAP', path: '/map' },
-    { code: '34814 18600', label: 'ABOUT US', path: '/about' },
-  ]
-
   return (
-    <div
-      className="fixed inset-0 bg-white flex flex-col"
-      style={{
-        opacity: visible ? 1 : 0,
-        transition: 'opacity 1.2s ease-in-out',
-        fontFamily: "'JetBrains Mono', monospace",
-      }}
-    >
-      {/* Top title */}
-      <div className="absolute top-10 left-12" style={{ fontFamily: 'Georgia, serif', fontSize: '32pt', fontWeight: 'normal', lineHeight: 0.95, letterSpacing: '1px' }}>
-        DIARY OF <br /> MEMORIES
+    <div style={{
+      position: 'fixed', inset: 0,
+      background: '#fff',
+      fontFamily: 'Georgia, serif',
+      display: 'flex', flexDirection: 'column',
+      overflow: 'hidden',
+    }}>
+
+      {/* ── Top bar ─────────────────────────────────────────────────────────── */}
+      <div style={{
+        background: '#000', color: '#fff',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        padding: '10px 20px', flexShrink: 0,
+      }}>
+        <button
+          onClick={() => navigate('/hub')}
+          style={{ fontFamily: 'Georgia, serif', fontSize: '15pt', color: '#fff', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 'normal', letterSpacing: '0.5px' }}
+        >
+          DIARY OF MEMORIES
+        </button>
+        <button
+          onClick={() => navigate('/about')}
+          style={{ fontFamily: 'Georgia, serif', fontSize: '15pt', color: '#fff', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 'normal' }}
+        >
+          From Man to Machine
+        </button>
       </div>
 
-      {/* Top-right nav */}
-      <div className="absolute top-10 right-12 flex gap-20 items-center" style={{ height: '32px' }}>
-        {navItems.map((item) => (
-          <button
-            key={item.path}
-            onClick={() => navigate(item.path)}
-            className="group relative flex items-center"
-            style={{ background: 'none', border: 'none', cursor: 'pointer', height: '32px' }}
-          >
-            <span className="group-hover:opacity-0 transition-opacity duration-300 text-[10px] tracking-wider" style={{ color: '#B3B3B3' }}>
-              {item.code}
-            </span>
-            <span className="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-300 text-[10px] tracking-wider text-black whitespace-nowrap">
-              {item.label}
-            </span>
-          </button>
-        ))}
-      </div>
+      {/* ── Two-column body ──────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', overflow: 'hidden' }}>
 
-      {/* Center content — the hub description */}
-      <div className="flex-1 flex flex-col items-center justify-center px-16 max-w-3xl mx-auto w-full">
-        <div className="w-full">
-          {/* Subtitle code line */}
-          <div className="text-[9px] tracking-widest mb-8 uppercase" style={{ color: '#B3B3B3' }}>
-            SEQUENCE.V3_ACTIVE // SYSTEM: BERT-BASE-MULTILINGUAL-CASED
+        {/* LEFT column */}
+        <div style={{ borderRight: '1px solid #000', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+
+          {/* Disclaimer text — frame 1 */}
+          <div style={{
+            borderBottom: '1px solid #000',
+            padding: '10px 14px',
+            fontSize: '9pt',
+            lineHeight: 1.5,
+            color: '#000',
+            flexShrink: 0,
+            opacity: frame >= 1 ? 1 : 0,
+            transition: 'opacity 0.5s ease',
+          }}>
+            Travelling is not moving through space. It is collecting sensations that the body
+            memorises before the mind does. The perception of a memory becomes real the
+            moment you smell it, hear it, feel it.
           </div>
 
-          {/* Main headline */}
-          <h2 style={{ fontFamily: 'Georgia, serif', fontSize: '42pt', fontWeight: 'normal', lineHeight: 1.1, marginBottom: '32px' }}>
-            Can a machine understand<br />what you felt?
-          </h2>
+          {/* Big question — frame 2 */}
+          <div style={{
+            flex: 1, padding: '20px 16px',
+            display: 'flex', alignItems: 'flex-start',
+            opacity: frame >= 2 ? 1 : 0,
+            transition: 'opacity 0.5s ease',
+          }}>
+            <h1 style={{
+              fontFamily: 'Georgia, serif',
+              fontSize: 'clamp(32pt, 6vw, 56pt)',
+              fontWeight: 'normal',
+              lineHeight: 1.08,
+              margin: 0,
+              color: '#000',
+            }}>
+              Is A.I. able to understand the value of human sensations?
+            </h1>
+          </div>
+        </div>
 
-          <p className="text-[11px] leading-relaxed mb-12" style={{ color: '#555', maxWidth: '520px' }}>
-            This is a clinical conversational experiment designed to transfer human sensory memory into a high-dimensional digital space. Choose your path.
-          </p>
+        {/* RIGHT column */}
+        <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
 
-          {/* Two main CTA buttons */}
-          <div className="flex gap-6">
-            <button
-              onClick={() => navigate('/interview')}
-              className="group flex flex-col gap-1 border border-black px-8 py-5 hover:bg-black hover:text-white transition-all duration-200 text-left"
-            >
-              <span className="text-[9px] tracking-widest" style={{ color: 'inherit', opacity: 0.5 }}>01 — EXPERIENCE</span>
-              <span className="text-[13px] tracking-wider uppercase font-medium">Share your memory</span>
-              <span className="text-[10px] mt-1" style={{ opacity: 0.5 }}>AI interview → BERT analysis</span>
-            </button>
-
-            <button
-              onClick={() => navigate('/map')}
-              className="group flex flex-col gap-1 border border-black px-8 py-5 hover:bg-black hover:text-white transition-all duration-200 text-left"
-            >
-              <span className="text-[9px] tracking-widest" style={{ opacity: 0.5 }}>02 — EXPLORE</span>
-              <span className="text-[13px] tracking-wider uppercase font-medium">See all memories</span>
-              <span className="text-[10px] mt-1" style={{ opacity: 0.5 }}>World map → BERT maps</span>
-            </button>
+          {/* Top-right quote — frame 3 */}
+          <div style={{
+            flex: 1,
+            borderBottom: '1px solid #000',
+            padding: '16px 18px',
+            opacity: frame >= 3 ? 1 : 0,
+            transition: 'opacity 0.5s ease',
+            overflow: 'hidden',
+          }}>
+            <QuoteText />
           </div>
 
-          {/* Privacy note — placeholder for the missing disclaimer */}
-          <div className="mt-10 text-[9px] leading-relaxed" style={{ color: '#B3B3B3', maxWidth: '480px' }}>
-            <span className="text-black font-medium">PRIVACY NOTICE:</span> All transcripts are processed locally and stored anonymously. No personal data is linked to your identity.
-            {/* TODO: Replace with full privacy disclaimer page link when built */}
+          {/* Nav buttons — frame 4 */}
+          <div style={{
+            opacity: frame >= 4 ? 1 : 0,
+            transition: 'opacity 0.5s ease',
+          }}>
+            {NAV_ITEMS.map((item, idx) => (
+              <button
+                key={item.path}
+                onClick={() => navigate(item.path)}
+                onMouseEnter={() => setHoveredBtn(idx)}
+                onMouseLeave={() => setHoveredBtn(null)}
+                style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                  width: '100%', padding: '14px 18px',
+                  borderBottom: idx < NAV_ITEMS.length - 1 ? '1px solid #000' : 'none',
+                  borderTop: idx === 0 ? 'none' : 'none',
+                  background: hoveredBtn === idx ? '#000' : '#fff',
+                  color: hoveredBtn === idx ? '#fff' : '#000',
+                  cursor: 'pointer', border: 'none',
+                  borderBottom: '1px solid #000',
+                  fontFamily: 'Georgia, serif',
+                  fontSize: '16pt', fontWeight: 'normal',
+                  transition: 'background 0.15s, color 0.15s',
+                  textAlign: 'left',
+                }}
+              >
+                <span>{item.label}</span>
+                <span style={{ fontSize: '16pt' }}>→</span>
+              </button>
+            ))}
           </div>
         </div>
       </div>
-
-      {/* Bottom bar */}
-      <div className="px-12 py-4 border-t border-zinc-100 flex justify-between text-[9px] tracking-wider" style={{ color: '#B3B3B3' }}>
-        <span>LATITUDE.COEF // 454.492.203</span>
-        <span>DIARY_OF_MEMORIES // {new Date().getFullYear()}</span>
-      </div>
     </div>
+  )
+}
+
+// Quote with highlighted words — matches images 6 & 7
+function QuoteText() {
+  const [hovered, setHovered] = useState(false)
+
+  // Words to highlight on hover
+  const segments = [
+    { text: 'We perceive', highlight: true },
+    { text: ' a mind wherever something responds to us in a coherent and adaptive way. When ', highlight: false },
+    { text: 'machines describe', highlight: true },
+    { text: ' emotions and sensations to us, we end up believing them to be real.', highlight: false },
+  ]
+
+  return (
+    <p
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{
+        fontFamily: 'Georgia, serif',
+        fontSize: 'clamp(11pt, 2.2vw, 16pt)',
+        lineHeight: 1.45,
+        margin: 0,
+        color: '#000',
+        cursor: 'default',
+      }}
+    >
+      {segments.map((seg, i) => (
+        <span
+          key={i}
+          style={{
+            background: hovered && seg.highlight ? '#4040ff' : 'transparent',
+            color: hovered && seg.highlight ? '#6BA633' : '#000',
+            transition: 'background 0.2s, color 0.2s',
+            padding: seg.highlight ? '0 1px' : '0',
+          }}
+        >
+          {seg.text}
+        </span>
+      ))}
+    </p>
   )
 }

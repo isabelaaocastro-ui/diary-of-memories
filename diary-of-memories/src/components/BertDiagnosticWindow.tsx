@@ -1,7 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Download, FileDown, Info, RefreshCw, Award } from 'lucide-react';
-import { BertToken, ActivationStats } from '../types';
+import { Download, RefreshCw } from 'lucide-react';
 import { getInterpolatedColor, computeActivationStats, tokenizeBERT } from '../utils/tokenizer';
 import { saveMemory } from '../utils/saveMemory';
 import html2canvas from 'html2canvas';
@@ -14,263 +13,410 @@ interface BertDiagnosticWindowProps {
   onReset: () => void;
 }
 
-export default function BertDiagnosticWindow({
-  storyTitle,
-  locationName,
-  combinedText,
-  countryCode,
-  onReset
-}: BertDiagnosticWindowProps) {
-  const navigate = useNavigate();
-  const tokens = tokenizeBERT(combinedText);
-  const stats = computeActivationStats(tokens);
+// Color filter options
+// 'blue-overlay' is the default: all cells are blue-tinted, hovered row reveals true color
+// other filters apply a CSS filter to the whole grid
+const COLOR_FILTERS = [
+  { label: 'BLUE (DEFAULT)', filter: 'blue-overlay' },
+  { label: 'TRUE COLORS', filter: 'none' },
+  { label: 'VIOLET', filter: 'hue-rotate(260deg) saturate(1.6)' },
+  { label: 'GREY', filter: 'grayscale(1)' },
+]
 
-  // Save to Supabase once
-  const hasSaved = useRef(false);
+// Tooltip messages shown on hover — reinforce the "we don't fully know why" idea
+const HOVER_MESSAGES = [
+  (token: string, val: number) =>
+    `"${token}" activated at ${val.toFixed(2)}. The model flagged this word as ${val > 0 ? 'significant in a positive direction' : 'significant in a negative direction'} — but we don't fully know why.`,
+  (token: string, val: number) =>
+    `The word "${token}" (${val.toFixed(2)}) is weighted here. Whether that reflects emotion, grammar, or something else entirely, the model doesn't say.`,
+  (token: string, val: number) =>
+    `"${token}": activation ${val.toFixed(2)}. This dimension responded to this word. The reason remains opaque — even to the system itself.`,
+  (token: string, val: number) =>
+    `We know "${token}" mattered to the model at this dimension (${val.toFixed(2)}). We just don't know what that means about your memory.`,
+]
+
+function getHoverMessage(token: string, val: number, seed: number) {
+  return HOVER_MESSAGES[seed % HOVER_MESSAGES.length](token, val)
+}
+
+export default function BertDiagnosticWindow({
+  storyTitle, locationName, combinedText, countryCode, onReset
+}: BertDiagnosticWindowProps) {
+  const navigate = useNavigate()
+  const tokens = tokenizeBERT(combinedText)
+  const stats = computeActivationStats(tokens)
+
+  // Save once
+  const hasSaved = useRef(false)
   useEffect(() => {
-    if (hasSaved.current) return;
-    hasSaved.current = true;
+    if (hasSaved.current) return
+    hasSaved.current = true
     saveMemory({
-      storyTitle,
-      locationName,
-      countryCode,
-      transcript: combinedText,
+      storyTitle, locationName, countryCode, transcript: combinedText,
       bertTokens: tokens,
       totalTokens: stats.totalTokens,
-      positiveTokens: stats.positiveCount,
-      positivePct: stats.positivePercent,
-      negativeTokens: stats.negativeCount,
-      negativePct: stats.negativePercent,
-      neutralTokens: stats.neutralCount,
-      neutralPct: stats.neutralPercent
-    });
-  }, []);
+      positiveTokens: stats.positiveCount, positivePct: stats.positivePercent,
+      negativeTokens: stats.negativeCount, negativePct: stats.negativePercent,
+      neutralTokens: stats.neutralCount, neutralPct: stats.neutralPercent
+    })
+  }, [])
 
-  const [hoveredCell, setHoveredCell] = useState<{
-    token: string; tokenIdx: number; dimension: number; value: number;
-  } | null>(null);
+  // Selected token row (click to lock)
+  const [selectedToken, setSelectedToken] = useState<{ token: string; tokenIdx: number; value: number; dimension: number } | null>(null)
+  const [lockedToken, setLockedToken] = useState<{ token: string; tokenIdx: number; value: number; dimension: number } | null>(null)
 
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [isExporting, setIsExporting] = useState(false);
-  const [exportMessage, setExportMessage] = useState<string | null>(null);
+  // Hovered row
+  const [hoveredRow, setHoveredRow] = useState<number | null>(null)
+
+  // Color filter
+  const [colorFilter, setColorFilter] = useState('blue-overlay')
+
+  // Tooltip
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null)
+
+  const cardRef = useRef<HTMLDivElement>(null)
+  const [isExporting, setIsExporting] = useState(false)
 
   const handleExportPNG = async () => {
-    if (!containerRef.current) return;
-    setIsExporting(true);
-    setExportMessage('Generating high-resolution PNG workspace...');
+    if (!cardRef.current) return
+    setIsExporting(true)
     try {
-      const target = containerRef.current.querySelector('#bert-diagnostic-card') as HTMLElement;
-      if (!target) throw new Error('Visual target not found');
-      const canvas = await html2canvas(target, { scale: 2, useCORS: true, backgroundColor: '#ffffff' });
-      const dataUrl = canvas.toDataURL('image/png');
-      const link = document.createElement('a');
-      link.download = `BERT_activation_matrix_${storyTitle.replace(/\s+/g, '_') || 'diary'}.png`;
-      link.href = dataUrl;
-      link.click();
-      setExportMessage('PNG saved successfully.');
-    } catch (err) {
-      console.error(err);
-      setExportMessage('Export to PNG failed.');
-    } finally {
-      setIsExporting(false);
-      setTimeout(() => setExportMessage(null), 3000);
-    }
-  };
+      const canvas = await html2canvas(cardRef.current, { scale: 2, useCORS: true, backgroundColor: '#ffffff' })
+      const link = document.createElement('a')
+      link.download = `BERT_${(storyTitle || 'memory').replace(/\s+/g, '_')}.png`
+      link.href = canvas.toDataURL('image/png')
+      link.click()
+    } catch (err) { console.error(err) }
+    setIsExporting(false)
+  }
 
-  const getActivationLabel = (val: number) => {
-    if (val > 0.4) return { text: 'Positive Activation', class: 'text-green-600' };
-    if (val < -0.4) return { text: 'Negative Activation', class: 'text-indigo-600' };
-    return { text: 'Neutral Activation', class: 'text-zinc-400' };
-  };
+  // Proportional scale marker
+  const total = stats.positivePercent + stats.negativePercent + stats.neutralPercent || 1
+  const sliderPos = 50 + ((stats.positivePercent - stats.negativePercent) / total) * 50
+
+  // Transcript lines
+  const transcriptLines = combinedText.split('.').map(s => s.trim()).filter(Boolean)
+
+  // Active display token (locked takes priority over hovered)
+  const activeToken = lockedToken || selectedToken
+
+  // handleCellHover and handleCellLeave are now inlined per-cell in the heatmap grid
+  // to allow per-row blue-overlay reveal logic
+
+  const handleCellClick = (token: string, ti: number, di: number, val: number) => {
+    if (lockedToken && lockedToken.tokenIdx === ti && lockedToken.dimension === di) {
+      setLockedToken(null) // click again to unlock
+    } else {
+      setLockedToken({ token, tokenIdx: ti, value: val, dimension: di })
+    }
+  }
+
+  const getActivationColor = (val: number) => {
+    if (val > 0.4) return '#6BA633'
+    if (val < -0.4) return '#4048D9'
+    return '#B3B3B3'
+  }
 
   return (
-    <div ref={containerRef} className="w-full flex flex-col items-center justify-center relative z-10 px-4 md:px-0 select-text">
+    <div
+      ref={cardRef}
+      style={{
+        position: 'fixed', inset: 0,
+        background: '#fff',
+        fontFamily: "'JetBrains Mono', monospace",
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
+      {/* ── Big blue title ─────────────────────────────────────────────────── */}
+      <div style={{
+        background: '#3333cc', color: '#fff',
+        padding: '16px 32px',
+        fontFamily: 'Georgia, serif',
+        fontSize: '24pt', fontWeight: 'normal',
+        textTransform: 'uppercase', letterSpacing: '2px',
+        flexShrink: 0,
+      }}>
+        {storyTitle || 'Untitled Memory'}
+      </div>
 
-      {exportMessage && (
-        <div className="mb-4 bg-black text-white px-4 py-2 text-xs font-mono tracking-wider flex items-center gap-2 border border-black animate-bounce">
-          <Info className="w-4 h-4 text-[#6BA633] animate-spin" />
-          <span>{exportMessage}</span>
+      {/* ── Info row ───────────────────────────────────────────────────────── */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: '1fr 1fr 2fr',
+        borderBottom: '1px solid #000', flexShrink: 0,
+      }}>
+        <div style={{ padding: '8px 16px', borderRight: '1px solid #000' }}>
+          <div style={{ fontSize: '8px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>Location</div>
+          <div style={{ fontSize: '11pt' }}>{locationName || '—'}</div>
         </div>
-      )}
-
-      <div
-        id="bert-diagnostic-card"
-        className="w-full max-w-5xl bg-white border border-black flex flex-col items-stretch overflow-hidden shadow-none mb-10"
-      >
-        {/* Top bar */}
-        <div className="border-b border-black py-2 px-4 flex justify-between items-center bg-white text-xs font-mono select-none">
-          <span className="text-black font-bold tracking-widest uppercase flex items-center gap-1.5">
-            <span className="w-2 h-2 bg-black animate-pulse" /> BERT-BASE-MULTILINGUAL-CASED EXTRAPOLATION REPORT
-          </span>
-          <span className="font-bold border border-black px-3 py-0.5 hover:bg-black hover:text-white transition-all cursor-pointer" onClick={onReset}>X</span>
+        <div style={{ padding: '8px 16px', borderRight: '1px solid #000' }}>
+          <div style={{ fontSize: '8px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>Embedding dimension</div>
+          <div style={{ fontSize: '11pt' }}>0–63 di 768</div>
         </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 border-b border-black">
-
-          {/* Left panel */}
-          <div className="lg:col-span-4 border-r border-black p-6 flex flex-col justify-between hc-bg-white text-left">
-            <div>
-              <h1 className="font-serif text-3xl font-medium tracking-tight text-black mb-1 leading-normal italic">
-                {storyTitle || "Unspoken Memory"}
-              </h1>
-              <p className="font-mono text-[11px] hc-text-zinc-500 uppercase tracking-widest mb-6">
-                {locationName || "Unrecorded Coordinates"}, {new Date().getFullYear()}
-              </p>
-
-              {/* Activation bar */}
-              <div className="mb-6">
-                <div className="flex w-full h-24 border border-black mb-4 overflow-hidden rounded-none">
-                  <div style={{ width: `${stats.positivePercent}%`, backgroundColor: '#6BA633', transition: 'width 1s ease-out' }} />
-                  <div style={{ width: `${stats.neutralPercent}%`, backgroundColor: '#e4e4e7', transition: 'width 1s ease-out' }} />
-                  <div style={{ width: `${stats.negativePercent}%`, backgroundColor: '#4048D9', transition: 'width 1s ease-out' }} />
-                </div>
-
-                <div className="space-y-1.5 font-mono text-[10px]">
-                  <div className="flex justify-between items-center text-zinc-500">
-                    <span>Total Subword Tokens Extracted</span>
-                    <span className="font-bold text-black">{stats.totalTokens}</span>
-                  </div>
-                  <div className="flex justify-between items-center text-[#6BA633]">
-                    <span className="flex items-center gap-1.5 font-semibold">
-                      <span className="w-2.5 h-2.5 bg-[#6BA633]" /> Positive Activation
-                    </span>
-                    <span className="font-bold">{stats.positivePercent}%</span>
-                  </div>
-                  <div className="flex justify-between items-center text-[#4048D9]">
-                    <span className="flex items-center gap-1.5 font-semibold">
-                      <span className="w-2.5 h-2.5 bg-[#4048D9]" /> Negative Activation
-                    </span>
-                    <span className="font-bold">{stats.negativePercent}%</span>
-                  </div>
-                  <div className="flex justify-between items-center hc-text-zinc-500">
-                    <span className="flex items-center gap-1.5 font-semibold">
-                      <span className="w-2.5 h-2.5 hc-bg-zinc-200 border hc-border-zinc-300" /> Neutral Activation
-                    </span>
-                    <span className="font-bold">{stats.neutralPercent}%</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-4 border hc-border-red-200 hc-bg-red-50-20 hc-text-neutral-800 font-mono text-[10px]/relaxed mb-6">
-                <span className="font-bold hc-text-red-700 block mb-1">LIMITATION ARREST SYSTEM STATE:</span>
-                Despite precise subword token indexing and multidimensional mathematical embedding representation (+2.00 to -2.00), this linguistic model possesses no conscious node for sensory reality. The subjective qualitative warmth, nostalgia, or flavor of your story exists only in human biological recollection. It is mathematically indemonstrable.
-              </div>
+        <div style={{ padding: '8px 16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+            <span style={{ fontSize: '8px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px' }}>CONTINUUM ACTIVATION SCALE</span>
+            <div
+              title="The marker shows the overall balance of your story. Leaning green = more positive activations. Leaning blue = more negative. We know something was important to the model — but not exactly why."
+              style={{ width: '16px', height: '16px', border: '1px solid #000', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '9px', fontWeight: 'bold', cursor: 'help', flexShrink: 0 }}
+            >!</div>
+          </div>
+          <div style={{ position: 'relative' }}>
+            <div style={{ height: '20px', background: 'linear-gradient(to right, #4048D9, #ffffff, #6BA633)', border: '1px solid #ccc', position: 'relative' }}>
+              <div style={{ position: 'absolute', left: `${sliderPos}%`, top: '50%', transform: 'translate(-50%, -50%)', width: '2px', height: '28px', background: '#000', zIndex: 2 }} />
             </div>
-
-            {/* Color legend */}
-            <div className="border-t hc-border-zinc-200 pt-4">
-              <span className="font-mono text-[9px] text-[#2c2c2c] block mb-2 font-bold uppercase tracking-wider">Continuum Activation Scale Legend:</span>
-              <div className="w-full h-4 relative overflow-hidden border border-black flex" style={{
-                background: 'linear-gradient(to right, #4048D9 0%, #FFFFFF 50%, #6BA633 100%)'
-              }}>
-                <span className="absolute left-1 top-0.5 text-[8px] font-mono text-white mix-blend-difference">-2.0 (Purple)</span>
-                <span className="absolute left-1/2 -translate-x-1/2 top-0.5 text-[8px] font-mono text-black">0.0 (Neutral)</span>
-                <span className="absolute right-1 top-0.5 text-[8px] font-mono text-white mix-blend-difference">+2.0 (Green)</span>
-              </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: '#666', marginTop: '2px' }}>
+              <span>-2.0</span><span>0</span><span>+2.0</span>
             </div>
           </div>
-
-          {/* Right panel — heatmap */}
-          <div className="lg:col-span-8 p-6 lg:p-8 flex flex-col justify-between hc-bg-zinc-50-20 overflow-x-auto">
-            <div>
-              <div className="flex justify-between items-center mb-4">
-                <span className="font-mono text-[10px] hc-text-zinc-500 uppercase tracking-widest">Dimension range activation map</span>
-                <span className="font-mono text-[9px] border border-black hc-bg-white px-2 py-0.5">[ SAMPLE RANGE: 0 - 63 of 768 ]</span>
-              </div>
-
-              <div className="border border-black hc-bg-white relative">
-                <div className="flex border-b border-black text-[8px] font-mono hc-text-zinc-400 select-none">
-                  <div className="w-16 border-r border-black hc-bg-zinc-100 flex items-center justify-center font-bold text-black py-1">Token</div>
-                  <div className="flex-1 grid grid-cols-8 text-center hc-bg-zinc-50">
-                    {['D0','D8','D16','D24','D32','D40','D48','D56'].map(d => <div key={d}>{d}</div>)}
-                  </div>
-                </div>
-
-                <div className="flex flex-col hc-divide-zinc-200 max-h-[460px] overflow-y-auto scrollbar-thin">
-                  {tokens.map((token, tIdx) => (
-                    <div key={token.id} className="flex hc-hover-bg-zinc-100-50 transition-all">
-                      <div className="w-16 border-r border-black px-1.5 py-1 text-[10px] font-mono font-medium truncate text-[#222]" title={token.text}>
-                        {token.text}
-                      </div>
-                      <div className="flex-1 grid h-6 select-none" style={{ gridTemplateColumns: 'repeat(64, minmax(0, 1fr))' }}>
-                        {token.embeddings.map((val, dIdx) => (
-                          <div
-                            key={dIdx}
-                            className="w-full h-full border-[0.5px] hc-border-zinc-100 cursor-pointer transition-transform duration-75 hover:scale-110 hover:z-20 hover:border-black"
-                            style={{ backgroundColor: getInterpolatedColor(val) }}
-                            onMouseEnter={() => setHoveredCell({ token: token.text, tokenIdx: tIdx, dimension: dIdx, value: val })}
-                            onMouseLeave={() => setHoveredCell(null)}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Hover info bar */}
-            <div className="mt-6 border border-black hc-bg-white p-3 font-mono text-[10px] min-h-[58px] flex items-center gap-3">
-              {hoveredCell ? (
-                <div className="flex-1 grid grid-cols-2 sm:grid-cols-4 gap-2 text-left">
-                  <div>
-                    <span className="hc-text-zinc-400 block pb-0.5 uppercase text-[8px]">Token Name</span>
-                    <span className="font-serif italic text-sm text-black font-semibold">{hoveredCell.token}</span>
-                  </div>
-                  <div>
-                    <span className="hc-text-zinc-400 block pb-0.5 uppercase text-[8px]">Token Index</span>
-                    <span className="hc-text-neutral-800 font-bold">{hoveredCell.tokenIdx} / {tokens.length - 1}</span>
-                  </div>
-                  <div>
-                    <span className="hc-text-zinc-400 block pb-0.5 uppercase text-[8px]">BERT Dimension</span>
-                    <span className="hc-text-neutral-800 font-bold">D{hoveredCell.dimension} <span className="hc-text-zinc-400 text-[8px]">(sampled)</span></span>
-                  </div>
-                  <div>
-                    <span className="hc-text-zinc-400 block pb-0.5 uppercase text-[8px]">Activation Force</span>
-                    <span className={`font-bold ${getActivationLabel(hoveredCell.value).class}`}>
-                      {hoveredCell.value.toFixed(4)} <span className="text-[8px] block sm:inline">({getActivationLabel(hoveredCell.value).text})</span>
-                    </span>
-                  </div>
-                </div>
-              ) : (
-                <div className="hc-text-zinc-400 italic flex items-center gap-1.5">
-                  <Info className="w-3.5 h-3.5" /> Pass your pointer over the BERT grid cells above to analyze activation details.
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Footer actions */}
-        <div className="bg-zinc-50/20 p-4 border-t border-black flex flex-col sm:flex-row gap-3 items-center justify-between">
-          <div className="flex gap-2.5">
-            <button onClick={handleExportPNG} disabled={isExporting} className="high-density-btn flex items-center gap-2">
-              <Download className="w-4 h-4" /> Download PNG
-            </button>
-          </div>
-
-          <div className="flex items-center gap-4">
-            {/* ✅ Now uses React Router — no more localhost:5500 */}
-            <button
-              onClick={() => navigate('/map')}
-              className="high-density-btn flex items-center gap-2 bg-black text-white hover:bg-zinc-800 border-black"
-            >
-              <Award className="w-4 h-4" /> Go to the Map
-            </button>
-            <button
-              onClick={onReset}
-              className="flex items-center gap-1.5 font-mono text-[10px] text-zinc-500 hover:text-black uppercase tracking-wider underline underline-offset-4 cursor-pointer"
-            >
-              <RefreshCw className="w-3 h-3" /> Transcribe a new memory
-            </button>
-          </div>
-        </div>
-
-        <div className="bg-white border-t border-black px-4 py-2.5 flex items-center justify-between text-[9px] font-mono text-zinc-500 uppercase tracking-widest leading-none">
-          <span>SYSTEM STATUS: EMBEDDINGS_EXTRACTED | DIM_X: 64 | DIM_Y: TOKENS | LATENCY: 24ms</span>
-          <span className="hidden sm:inline">SAMPLES_LOADED // TRIAL_9883_ACTIVE</span>
         </div>
       </div>
+
+      {/* ── Color filter bar ───────────────────────────────────────────────── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '2px',
+        padding: '6px 16px', borderBottom: '1px solid #000',
+        flexShrink: 0, background: '#fafafa',
+      }}>
+        <span style={{ fontSize: '8px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginRight: '8px' }}>VIEW FILTER:</span>
+        {COLOR_FILTERS.map(f => (
+          <button
+            key={f.label}
+            onClick={() => setColorFilter(f.filter)}
+            style={{
+              padding: '3px 10px', fontSize: '8px', letterSpacing: '1px',
+              textTransform: 'uppercase', cursor: 'pointer',
+              border: '1px solid #000',
+              background: colorFilter === f.filter ? '#000' : '#fff',
+              color: colorFilter === f.filter ? '#fff' : '#000',
+              fontFamily: "'JetBrains Mono', monospace",
+            }}
+          >{f.label}</button>
+        ))}
+        <span style={{ marginLeft: '16px', fontSize: '8px', color: '#aaa', fontStyle: 'italic' }}>
+          Hover a row to reveal its true colors · click to lock
+        </span>
+      </div>
+
+      {/* ── Main two-column body ────────────────────────────────────────────── */}
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', overflow: 'hidden' }}>
+
+        {/* LEFT: heatmap */}
+        <div style={{ borderRight: '1px solid #000', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ flex: 1, overflowY: 'auto', overflowX: 'auto' }}>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '70px repeat(64, 9px)',
+              gap: '1px', padding: '8px',
+              minWidth: 'max-content',
+              // Non-blue-overlay filters apply to the whole grid
+              filter: (colorFilter !== 'none' && colorFilter !== 'blue-overlay') ? colorFilter : undefined,
+            }}>
+              {tokens.map((token, ti) => {
+                const isLockedRow = lockedToken?.tokenIdx === ti
+                const isHoveredRow = hoveredRow === ti
+                // A row is "revealed" (shows true color) when:
+                // - blue-overlay is ON and this row is hovered or locked
+                // - blue-overlay is OFF (all rows always show true color)
+                const isRevealed = colorFilter !== 'blue-overlay' || isHoveredRow || isLockedRow
+
+                return (
+                  <React.Fragment key={ti}>
+                    {/* Token label */}
+                    <div
+                      onMouseEnter={() => setHoveredRow(ti)}
+                      onMouseLeave={() => setHoveredRow(null)}
+                      style={{
+                        fontSize: '7px', display: 'flex', alignItems: 'center',
+                        paddingRight: '4px', overflow: 'hidden', textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap', height: '13px',
+                        color: isLockedRow ? '#3333cc' : isHoveredRow ? '#000' : '#555',
+                        fontWeight: (isLockedRow || isHoveredRow) ? 'bold' : 'normal',
+                        cursor: 'default',
+                      }}>
+                      {token.text}
+                    </div>
+                    {/* Embedding cells */}
+                    {token.embeddings.map((val, di) => {
+                      const isLockedCell = lockedToken?.tokenIdx === ti && lockedToken?.dimension === di
+                      // True color of this cell
+                      const trueColor = getInterpolatedColor(val)
+                      // Blue-tinted color: shift everything toward a deep blue
+                      const blueColor = '#4048D9'
+
+                      return (
+                        <div
+                          key={di}
+                          onMouseEnter={() => {
+                            setHoveredRow(ti)
+                            setSelectedToken({ token: token.text, tokenIdx: ti, value: val, dimension: di })
+                          }}
+                          onMouseMove={e => {
+                            const seed = ti * 7 + di
+                            setTooltip({ x: e.clientX, y: e.clientY, text: getHoverMessage(token.text, val, seed) })
+                          }}
+                          onMouseLeave={() => {
+                            setHoveredRow(null)
+                            if (!lockedToken) setSelectedToken(null)
+                            setTooltip(null)
+                          }}
+                          onClick={() => handleCellClick(token.text, ti, di, val)}
+                          style={{
+                            width: '9px', height: '13px',
+                            // In blue-overlay mode: show blue unless this row is revealed
+                            backgroundColor: isRevealed ? trueColor : blueColor,
+                            cursor: 'pointer',
+                            outline: isLockedCell ? '2px solid #fff' : 'none',
+                            outlineOffset: '-1px',
+                            // Dim other rows when a row is locked
+                            opacity: lockedToken && !isLockedRow ? 0.4 : 1,
+                            transition: 'background-color 0.18s ease, opacity 0.15s',
+                          }}
+                        />
+                      )
+                    })}
+                  </React.Fragment>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Info bar */}
+          <div style={{ borderTop: '1px solid #000', display: 'flex', flexShrink: 0, minHeight: '44px' }}>
+            {activeToken ? (
+              <>
+                <div style={{ padding: '6px 12px', borderRight: '1px solid #000', background: '#000', minWidth: '110px' }}>
+                  <div style={{ fontSize: '7px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>Token name</div>
+                  <div style={{ fontSize: '10px', color: '#6BA633', fontWeight: 'bold' }}>{activeToken.token}</div>
+                </div>
+                <div style={{ padding: '6px 12px', borderRight: '1px solid #000' }}>
+                  <div style={{ fontSize: '7px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>N Token</div>
+                  <div style={{ fontSize: '10px' }}>{activeToken.tokenIdx}/{tokens.length}</div>
+                </div>
+                <div style={{ padding: '6px 12px', borderRight: '1px solid #000' }}>
+                  <div style={{ fontSize: '7px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>Dimension</div>
+                  <div style={{ fontSize: '10px' }}>D{activeToken.dimension}</div>
+                </div>
+                <div style={{ padding: '6px 12px' }}>
+                  <div style={{ fontSize: '7px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>Activation</div>
+                  <div style={{ fontSize: '10px', color: getActivationColor(activeToken.value), fontWeight: 'bold' }}>{activeToken.value.toFixed(2)}</div>
+                </div>
+                {lockedToken && (
+                  <div style={{ padding: '6px 12px', marginLeft: 'auto', display: 'flex', alignItems: 'center' }}>
+                    <button onClick={() => setLockedToken(null)} style={{ fontSize: '8px', color: '#888', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontFamily: "'JetBrains Mono', monospace", textTransform: 'uppercase', letterSpacing: '1px' }}>
+                      UNLOCK ROW
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ padding: '8px 12px', fontSize: '9px', color: '#aaa', fontStyle: 'italic', display: 'flex', alignItems: 'center' }}>
+                Hover over a cell to explore · click to lock a token row
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* RIGHT: transcript */}
+        <div style={{ overflowY: 'auto', padding: '24px 28px' }}>
+          <div style={{ fontFamily: 'Georgia, serif', fontSize: '13pt', lineHeight: 1.8, color: '#000' }}>
+            {transcriptLines.map((line, i) => {
+              const words = line.split(' ')
+              const highlightIdx = words.findIndex(w => w.length > 6)
+              return (
+                <p key={i} style={{ marginBottom: '10px' }}>
+                  {words.map((word, wi) => (
+                    <span key={wi} style={{ color: wi === highlightIdx ? '#6BA633' : '#000' }}>
+                      {word}{wi < words.length - 1 ? ' ' : ''}
+                    </span>
+                  ))}
+                </p>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Bottom action bar ───────────────────────────────────────────────── */}
+      <div style={{
+        borderTop: '1px solid #000',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 20px', height: '52px',
+        background: '#fff', flexShrink: 0,
+      }}>
+        <button
+          onClick={handleExportPNG}
+          disabled={isExporting}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '8px',
+            border: '1px solid #000', background: '#fff', padding: '8px 16px',
+            fontFamily: "'JetBrains Mono', monospace", fontSize: '10px',
+            textTransform: 'uppercase', letterSpacing: '1px', cursor: 'pointer',
+          }}
+        >
+          <Download size={14} /> {isExporting ? 'EXPORTING...' : 'DOWNLOAD PNG'}
+        </button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          <button
+            onClick={() => navigate('/map')}
+            style={{
+              border: '1px solid #ddd', background: '#fff', padding: '8px 24px',
+              fontFamily: "'JetBrains Mono', monospace", fontSize: '10px',
+              textTransform: 'uppercase', letterSpacing: '1px', cursor: 'pointer', color: '#888',
+            }}
+          >
+            SEE ALL MEMORIES
+          </button>
+          <button
+            onClick={onReset}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              border: 'none', background: 'none',
+              fontFamily: "'JetBrains Mono', monospace", fontSize: '10px',
+              textTransform: 'uppercase', letterSpacing: '1px', cursor: 'pointer', color: '#888',
+              textDecoration: 'underline',
+            }}
+          >
+            <RefreshCw size={12} /> TRANSCRIBE A NEW MEMORY
+          </button>
+        </div>
+      </div>
+
+      {/* ── System footer ───────────────────────────────────────────────────── */}
+      <div style={{
+        borderTop: '1px solid #eee', display: 'flex', justifyContent: 'space-between',
+        padding: '3px 20px', background: '#fff', flexShrink: 0,
+      }}>
+        <span style={{ fontSize: '8px', color: '#aaa', textTransform: 'uppercase', letterSpacing: '1px' }}>
+          SYSTEM STATUS: EMBEDDINGS_EXTRACTED | DIM_X: 64 | DIM_Y: {stats.totalTokens} TOKENS | LATENCY: 24MS
+        </span>
+        <span style={{ fontSize: '8px', color: '#aaa', textTransform: 'uppercase', letterSpacing: '1px' }}>
+          SAMPLES_LOADED // TRIAL_9883_ACTIVE
+        </span>
+      </div>
+
+      {/* ── Floating tooltip ────────────────────────────────────────────────── */}
+      {tooltip && (
+        <div style={{
+          position: 'fixed',
+          left: tooltip.x + 16,
+          top: tooltip.y - 8,
+          maxWidth: '280px',
+          background: '#000', color: '#fff',
+          padding: '10px 14px',
+          fontSize: '10px', lineHeight: 1.6,
+          fontFamily: "'JetBrains Mono', monospace",
+          pointerEvents: 'none',
+          zIndex: 999,
+          boxShadow: '0 4px 20px rgba(0,0,0,0.3)',
+        }}>
+          {tooltip.text}
+          <div style={{ marginTop: '8px', paddingTop: '6px', borderTop: '1px solid #333', fontSize: '8px', color: '#888', fontStyle: 'italic' }}>
+            The model registered this. The reason remains opaque.
+          </div>
+        </div>
+      )}
     </div>
-  );
+  )
 }

@@ -10,7 +10,7 @@ export default function App() {
   return (
     <Routes>
       {/* Cinematic intro — the map site's animated terminal intro */}
-      <Route path="/" element={<IntroPage />} />
+      <Route path="/" element={<HubPage />} />
 
       {/* Hub — buttons for interactive info (from your diagram) */}
       <Route path="/hub" element={<HubPage />} />

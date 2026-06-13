@@ -1,416 +1,558 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Send, HelpCircle, Keyboard, Volume2, AlertCircle } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Download, RefreshCw } from 'lucide-react';
+import { getInterpolatedColor, computeActivationStats, tokenizeBERT } from '../utils/tokenizer';
+import { saveMemory } from '../utils/saveMemory';
+import html2canvas from 'html2canvas';
 
-interface ConversationTerminalProps {
-  onComplete: (answers: {
-    place: string;
-    reason: string;
-    moment: string;
-    visual: string;
-    senses: string;
-    title: string;
-    fullCombinedText: string;
-    countryCode: string;
-  }) => void;
+interface BertDiagnosticWindowProps {
+  storyTitle: string;
+  locationName: string;
+  combinedText: string;
+  countryCode: string;
+  onReset: () => void;
 }
 
-export default function ConversationTerminal({ onComplete }: ConversationTerminalProps) {
-  const [currentStep, setCurrentStep] = useState(0);
-  const [inputText, setInputText] = useState('');
-  const [isRecording, setIsRecording] = useState(false);
-  const [speechError, setSpeechError] = useState<string | null>(null);
-  const [extractedPlace, setExtractedPlace] = useState('');
-  const [isConfirmingPlace, setIsConfirmingPlace] = useState(false);
+// Color filter options
+// 'blue-overlay' is the default: all cells are blue-tinted, hovered row reveals true color
+const COLOR_FILTERS = [
+  { label: 'FOCUS MODE', filter: 'blue-overlay' },
+  { label: 'ORIGINAL COLORS', filter: 'none' },
+]
 
-  const [audioSinks, setAudioSinks] = useState<number[]>([12, 18, 11, 24, 8, 14, 20, 16, 12, 10]);
+// Dimension concepts — what each of the 64 sampled dimensions broadly captures
+// These are illustrative labels based on known BERT attention patterns
+const DIMENSION_CONCEPTS: Record<number, string> = {
+  0:  'syntactic structure',
+  1:  'sentence boundaries',
+  2:  'subject–verb relations',
+  3:  'tense and temporality',
+  4:  'negation patterns',
+  5:  'spatial references',
+  6:  'emotional valence',
+  7:  'entity salience',
+  8:  'causal relationships',
+  9:  'sensory language',
+  10: 'named locations',
+  11: 'abstract concepts',
+  12: 'concrete objects',
+  13: 'person references',
+  14: 'movement and action',
+  15: 'intensity modifiers',
+  16: 'contextual grounding',
+  17: 'discourse markers',
+  18: 'memory and recall',
+  19: 'contrast and opposition',
+  20: 'certainty and doubt',
+  21: 'social relationships',
+  22: 'time expressions',
+  23: 'sensory-motor integration',
+  24: 'narrative sequence',
+  25: 'body and physicality',
+  26: 'light and visual perception',
+  27: 'sound and auditory cues',
+  28: 'temperature and touch',
+  29: 'smell and taste',
+  30: 'desire and intention',
+  31: 'surprise and novelty',
+  32: 'fear and threat',
+  33: 'joy and warmth',
+  34: 'loss and absence',
+  35: 'belonging and place',
+  36: 'grammatical function',
+  37: 'subword morphology',
+  38: 'word frequency signals',
+  39: 'cultural references',
+  40: 'numeric and quantity',
+  41: 'comparison patterns',
+  42: 'metaphor and imagery',
+  43: 'uncertainty markers',
+  44: 'completion and endings',
+  45: 'beginning and origin',
+  46: 'depth of experience',
+  47: 'shared vs. private',
+  48: 'motion trajectory',
+  49: 'stillness and pause',
+  50: 'color and texture',
+  51: 'scale and distance',
+  52: 'repetition patterns',
+  53: 'transition signals',
+  54: 'human vs. non-human',
+  55: 'interior vs. exterior',
+  56: 'familiarity and recognition',
+  57: 'surprise and the unexpected',
+  58: 'collective memory',
+  59: 'individual experience',
+  60: 'language register',
+  61: 'cross-lingual patterns',
+  62: 'contextual emphasis',
+  63: 'global sentence meaning',
+}
 
-  const [answers, setAnswers] = useState({
-    place: '',
-    reason: '',
-    moment: '',
-    visual: '',
-    senses: '',
-    title: ''
-  });
+// Build tooltip text based on activation strength and dimension concept
+function getHoverMessage(token: string, val: number, dimension: number): { main: string; sub: string; relevance: 'high' | 'low' } {
+  const abs = Math.abs(val)
+  const dimConcept = DIMENSION_CONCEPTS[dimension] ?? `pattern ${dimension}`
+  const direction = val > 0 ? 'positively' : 'negatively'
 
-  const [chatLog, setChatLog] = useState<{ sender: 'ai' | 'user'; text: string; isQuestion?: boolean }[]>([
-    { sender: 'ai', text: "Where was the most memorable trip you had?", isQuestion: true }
-  ]);
-
-  const recognitionRef = useRef<any>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      const rec = new SpeechRecognition();
-      rec.continuous = true;
-      rec.interimResults = true;
-      rec.lang = 'en-US';
-
-      rec.onresult = (event: any) => {
-        let interimTranscript = '';
-        let finalTranscript = '';
-
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript;
-          } else {
-            interimTranscript += event.results[i][0].transcript;
-          }
-        }
-
-        const transcript = finalTranscript || interimTranscript;
-        if (transcript) {
-          setInputText(transcript);
-        }
-
-        setAudioSinks(Array.from({ length: 12 }, () => Math.floor(Math.random() * 26) + 4));
-      };
-
-      rec.onerror = (event: any) => {
-        console.error('Speech recognition error', event);
-        if (event.error === 'not-allowed') {
-          setSpeechError('Microphone permission denied. Using keyboard entry.');
-        } else {
-          setSpeechError(`Microphone issue (${event.error}). Falling back.`);
-        }
-        setIsRecording(false);
-      };
-
-      rec.onend = () => {
-        setIsRecording(false);
-      };
-
-      recognitionRef.current = rec;
-    } else {
-      setSpeechError('Web Speech API is not supported in this browser. Please type via keyboard.');
+  if (abs >= 1) {
+    // High relevance — the model found this important
+    const mains = [
+      `The model found "${token}" strongly relevant here — it activated ${direction} at ${val.toFixed(2)} on the dimension of ${dimConcept}.`,
+      `"${token}" crossed the relevance threshold (${val.toFixed(2)}). For this dimension — ${dimConcept} — the model registered this word as meaningful.`,
+      `Strong signal: "${token}" activated at ${val.toFixed(2)}. In terms of ${dimConcept}, the model treated this as significant.`,
+    ]
+    return {
+      main: mains[Math.abs(Math.round(val * 10 + dimension)) % mains.length],
+      sub: "We know it mattered. We don't fully know why.",
+      relevance: 'high',
     }
-  }, []);
-
-  useEffect(() => {
-    let interval: any;
-    if (isRecording) {
-      interval = setInterval(() => {
-        setAudioSinks(Array.from({ length: 12 }, () => Math.floor(Math.random() * 26) + 6));
-      }, 100);
-    } else {
-      setAudioSinks([6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6]);
+  } else {
+    // Low relevance — the model found this less important
+    const mains = [
+      `"${token}" registered weakly here (${val.toFixed(2)}). For the dimension of ${dimConcept}, the model considered this less central to meaning.`,
+      `Low activation: "${token}" at ${val.toFixed(2)}. On the axis of ${dimConcept}, this word didn't strongly shape the model's understanding.`,
+      `The model passed over "${token}" on this dimension (${dimConcept}, ${val.toFixed(2)}). Not everything in a sentence carries equal weight.`,
+    ]
+    return {
+      main: mains[Math.abs(Math.round(val * 10 + dimension)) % mains.length],
+      sub: 'The model registered this as background — not foreground.',
+      relevance: 'low',
     }
-    return () => clearInterval(interval);
-  }, [isRecording]);
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chatLog, isConfirmingPlace]);
-
-  const toggleRecording = () => {
-    if (!recognitionRef.current) {
-      setSpeechError('No microphone driver detected. Please type manually inside the box.');
-      return;
-    }
-
-    if (isRecording) {
-      recognitionRef.current.stop();
-      setIsRecording(false);
-    } else {
-      setSpeechError(null);
-      try {
-        setIsRecording(true);
-        recognitionRef.current.start();
-      } catch (err) {
-        console.error('Failed to start speech recognition:', err);
-        setIsRecording(false);
-      }
-    }
-  };
-
-  const extractLocation = (text: string): string => {
-    const cleanWord = (w: string) => w.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, "").trim();
-    const tokens = text.split(/\s+/).map(cleanWord);
-
-    const stopWords = new Set([
-      'i', 'me', 'my', 'myself', 'we', 'our', 'u', 'us', 'the', 'a', 'an', 'in', 'on', 'at',
-      'to', 'for', 'with', 'by', 'went', 'had', 'trip', 'most', 'memorable', 'was', 'were',
-      'been', 'is', 'are', 'travelled', 'visited', 'travel', 'visit', 'there', 'here', 'that',
-      'this', 'it', 'and', 'but', 'or', 'so', 'because', 'when', 'why', 'how', 'where'
-    ]);
-
-    const rawWords = text.split(/\s+/);
-    for (let i = 0; i < rawWords.length; i++) {
-      const stripped = cleanWord(rawWords[i]);
-      if (stripped.length > 2 && /^[A-Z]/.test(stripped) && !stopWords.has(stripped.toLowerCase())) {
-        return stripped;
-      }
-    }
-
-    for (let i = 0; i < tokens.length; i++) {
-      if (tokens[i].length > 2 && !stopWords.has(tokens[i].toLowerCase())) {
-        return tokens[i];
-      }
-    }
-
-    return tokens[0] || 'the journey';
-  };
-
-  const getCountryCode = async (placeName: string): Promise<string> => {
-  try {
-    const res = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(placeName)}&format=json&limit=1&addressdetails=1`,
-      { headers: { 'User-Agent': 'map-of-memories-app' } }
-    );
-    const data = await res.json();
-    if (data.length > 0 && data[0].address?.country_code) {
-      return data[0].address.country_code.toUpperCase();
-    }
-  } catch (err) {
-    console.warn('Country code lookup failed:', err);
   }
-  return '??';
-};
+}
 
-  const speakQuestion = (text: string) => {
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'en-US';
-      utterance.rate = 1.0;
-      utterance.pitch = 0.85;
-      window.speechSynthesis.speak(utterance);
-    }
-  };
+export default function BertDiagnosticWindow({
+  storyTitle, locationName, combinedText, countryCode, onReset
+}: BertDiagnosticWindowProps) {
+  const navigate = useNavigate()
+  const tokens = tokenizeBERT(combinedText)
+  const stats = computeActivationStats(tokens)
 
-  const handleConfirmLocation = () => {
-    if (!extractedPlace.trim()) return;
-    setIsConfirmingPlace(false);
+  // Save once
+  const hasSaved = useRef(false)
+  useEffect(() => {
+    if (hasSaved.current) return
+    hasSaved.current = true
+    saveMemory({
+      storyTitle, locationName, countryCode, transcript: combinedText,
+      bertTokens: tokens,
+      totalTokens: stats.totalTokens,
+      positiveTokens: stats.positiveCount, positivePct: stats.positivePercent,
+      negativeTokens: stats.negativeCount, negativePct: stats.negativePercent,
+      neutralTokens: stats.neutralCount, neutralPct: stats.neutralPercent
+    })
+  }, [])
 
-    const nextStep = 1;
-    setCurrentStep(nextStep);
+  // Selected token row (click to lock)
+  const [selectedToken, setSelectedToken] = useState<{ token: string; tokenIdx: number; value: number; dimension: number } | null>(null)
+  const [lockedToken, setLockedToken] = useState<{ token: string; tokenIdx: number; value: number; dimension: number } | null>(null)
 
-    const nextQ = `Why did you remember ${extractedPlace} when I asked that?`;
-    setAnswers(prev => ({ ...prev, place: extractedPlace }));
-    setChatLog(prev => [...prev, { sender: 'ai', text: nextQ, isQuestion: true }]);
-    speakQuestion(nextQ);
-  };
+  // Hovered row and dimension
+  const [hoveredRow, setHoveredRow] = useState<number | null>(null)
+  const [hoveredDim, setHoveredDim] = useState<number | null>(null)
 
-  const handleSubmit = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const text = inputText.trim();
-    if (!text) return;
+  // Color filter
+  const [colorFilter, setColorFilter] = useState('blue-overlay')
 
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-    }
+  // Tooltip
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; msg: ReturnType<typeof getHoverMessage> } | null>(null)
 
-    if (isRecording && recognitionRef.current) {
-      recognitionRef.current.stop();
-      setIsRecording(false);
-    }
+  const cardRef = useRef<HTMLDivElement>(null)
+  const [isExporting, setIsExporting] = useState(false)
 
-    setInputText('');
-    setChatLog(prev => [...prev, { sender: 'user', text }]);
+  const handleExportPNG = async () => {
+    if (!cardRef.current) return
+    setIsExporting(true)
+    try {
+      const canvas = await html2canvas(cardRef.current, { scale: 2, useCORS: true, backgroundColor: '#ffffff' })
+      const link = document.createElement('a')
+      link.download = `BERT_${(storyTitle || 'memory').replace(/\s+/g, '_')}.png`
+      link.href = canvas.toDataURL('image/png')
+      link.click()
+    } catch (err) { console.error(err) }
+    setIsExporting(false)
+  }
 
-    if (currentStep === 0) {
-      const detected = extractLocation(text);
-      setExtractedPlace(detected);
-      setIsConfirmingPlace(true);
-      return;
-    }
+  // Proportional scale marker
+  const total = stats.positivePercent + stats.negativePercent + stats.neutralPercent || 1
+  const sliderPos = 50 + ((stats.positivePercent - stats.negativePercent) / total) * 50
 
-    const fields = ['place', 'reason', 'moment', 'visual', 'senses', 'title'];
-    const currentField = fields[currentStep];
-    const newAnswers = { ...answers, [currentField]: text };
-    setAnswers(newAnswers);
+  // Transcript lines
+  const transcriptLines = combinedText.split('.').map(s => s.trim()).filter(Boolean)
 
-    const nextStep = currentStep + 1;
+  // Active display token (locked takes priority over hovered)
+  const activeToken = lockedToken || selectedToken
 
-    if (nextStep < 6) {
-      setCurrentStep(nextStep);
+  // handleCellHover and handleCellLeave are now inlined per-cell in the heatmap grid
+  // to allow per-row blue-overlay reveal logic
 
-      let nextQ = "";
-      if (nextStep === 1) {
-        nextQ = `Why did you remember ${extractedPlace || 'that place'} when I asked that?`;
-      } else if (nextStep === 2) {
-        nextQ = "Can you tell me about a precise moment of your journey?";
-      } else if (nextStep === 3) {
-        nextQ = "I would like to understand this experience a bit more. Can you describe to me what you saw at that moment?";
-      } else if (nextStep === 4) {
-        nextQ = "I still don't understand... Can you describe another sense you felt at that time, like the taste, smell, sound or physical feelings you were experiencing?";
-      } else if (nextStep === 5) {
-        nextQ = "Okay... I see what you are saying. For the last question, If you were to give a title to that story, what would it be?";
-      }
-
-      setChatLog(prev => [...prev, { sender: 'ai', text: nextQ, isQuestion: true }]);
-      setTimeout(() => speakQuestion(nextQ), 400);
-
+  const handleCellClick = (token: string, ti: number, di: number, val: number) => {
+    if (lockedToken && lockedToken.tokenIdx === ti && lockedToken.dimension === di) {
+      setLockedToken(null) // click again to unlock
     } else {
-      // ✅ Conversation complete — BertDiagnosticWindow will handle the save
-      const combined = `
-        Location: ${newAnswers.place}.
-        Reason: ${newAnswers.reason}.
-        Moment: ${newAnswers.moment}.
-        Visual details: ${newAnswers.visual}.
-        Sensory dimensions: ${newAnswers.senses}.
-        Title: ${newAnswers.title}.
-      `;
-
-      const countryCode = await getCountryCode(newAnswers.place);
-
-      onComplete({
-        place: newAnswers.place,
-        reason: newAnswers.reason,
-        moment: newAnswers.moment,
-        visual: newAnswers.visual,
-        senses: newAnswers.senses,
-        title: newAnswers.title,
-        fullCombinedText: combined,
-        countryCode
-      });
+      setLockedToken({ token, tokenIdx: ti, value: val, dimension: di })
     }
-  };
+  }
+
+  const getActivationColor = (val: number) => {
+    if (val > 0.4) return '#6BA633'
+    if (val < -0.4) return '#4048D9'
+    return '#B3B3B3'
+  }
 
   return (
-    <div id="conversation_terminal_panel" className="relative flex flex-col justify-between w-full max-w-2xl bg-white border border-black p-5 sm:p-7 md:p-8 shrink-0 z-10 select-text">
-      <div className="flex justify-between items-center text-[10px] font-mono border-b border-black pb-3 mb-6">
-        <span className="text-black font-semibold uppercase tracking-widest flex items-center gap-1.5">
-          <Volume2 className="w-3.5 h-3.5" /> DIALOGUE TRANSLATOR LOGS
+    <div
+      ref={cardRef}
+      style={{
+        position: 'fixed', inset: 0,
+        background: '#fff',
+        fontFamily: "'JetBrains Mono', monospace",
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+      }}
+    >
+      {/* ── Big blue title ─────────────────────────────────────────────────── */}
+      <div style={{
+        background: '#3333cc', color: '#fff',
+        padding: '16px 32px',
+        fontFamily: 'Georgia, serif',
+        fontSize: '24pt', fontWeight: 'normal',
+        textTransform: 'uppercase', letterSpacing: '2px',
+        flexShrink: 0,
+      }}>
+        {storyTitle || 'Untitled Memory'}
+      </div>
+
+      {/* ── Info row ───────────────────────────────────────────────────────── */}
+      <div style={{
+        display: 'grid', gridTemplateColumns: '1fr 1fr 2fr',
+        borderBottom: '1px solid #000', flexShrink: 0,
+      }}>
+        <div style={{ padding: '8px 16px', borderRight: '1px solid #000' }}>
+          <div style={{ fontSize: '8px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>Location</div>
+          <div style={{ fontSize: '11pt' }}>{locationName || '—'}</div>
+        </div>
+        <div style={{ padding: '8px 16px', borderRight: '1px solid #000' }}>
+          <div style={{ fontSize: '8px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>Embedding dimension</div>
+          <div style={{ fontSize: '11pt' }}>0–63 di 768</div>
+        </div>
+        <div style={{ padding: '8px 16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+            <span style={{ fontSize: '8px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px' }}>CONTINUUM ACTIVATION SCALE</span>
+            <div
+              title="The marker shows the overall balance of your story. Leaning green = more positive activations. Leaning blue = more negative. We know something was important to the model — but not exactly why."
+              style={{ width: '16px', height: '16px', border: '1px solid #000', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '9px', fontWeight: 'bold', cursor: 'help', flexShrink: 0 }}
+            >!</div>
+          </div>
+          <div style={{ position: 'relative' }}>
+            <div style={{ height: '20px', background: 'linear-gradient(to right, #4048D9, #ffffff, #6BA633)', border: '1px solid #ccc', position: 'relative' }}>
+              <div style={{ position: 'absolute', left: `${sliderPos}%`, top: '50%', transform: 'translate(-50%, -50%)', width: '2px', height: '28px', background: '#000', zIndex: 2 }} />
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '9px', color: '#666', marginTop: '2px' }}>
+              <span>-2.0</span><span>0</span><span>+2.0</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Color filter bar ───────────────────────────────────────────────── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '2px',
+        padding: '6px 16px', borderBottom: '1px solid #000',
+        flexShrink: 0, background: '#fafafa',
+      }}>
+        <span style={{ fontSize: '8px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginRight: '8px' }}>VIEW FILTER:</span>
+        {COLOR_FILTERS.map(f => (
+          <button
+            key={f.label}
+            onClick={() => setColorFilter(f.filter)}
+            style={{
+              padding: '3px 10px', fontSize: '8px', letterSpacing: '1px',
+              textTransform: 'uppercase', cursor: 'pointer',
+              border: '1px solid #000',
+              background: colorFilter === f.filter ? '#000' : '#fff',
+              color: colorFilter === f.filter ? '#fff' : '#000',
+              fontFamily: "'JetBrains Mono', monospace",
+            }}
+          >{f.label}</button>
+        ))}
+        <span style={{ marginLeft: '16px', fontSize: '8px', color: '#aaa', fontStyle: 'italic' }}>
+          Hover a row to reveal its true colors · click to keep it revealed
         </span>
-        <span className="text-neutral-500">STAGE {currentStep + 1} OF 6</span>
       </div>
 
-      <div className="flex-1 overflow-y-auto max-h-[280px] min-h-[140px] pr-2 flex flex-col gap-5 mb-6 scrollbar-thin">
-        <AnimatePresence initial={false}>
-          {chatLog.map((message, idx) => (
-            <motion.div
-              key={idx}
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3 }}
-              className={`flex flex-col ${message.sender === 'ai' ? 'items-start' : 'items-end'}`}
-            >
-              <div className="text-[9px] font-mono text-gray-400 mb-1">
-                {message.sender === 'ai' ? 'LOG::EMBEDDINGMODEL_v1.0' : 'RAW::HUMAN_SUBJ_02'}
-              </div>
-              <div
-                className={`max-w-[85%] text-left p-3 border leading-relaxed ${
-                  message.sender === 'ai'
-                    ? 'font-mono text-sm bg-zinc-50 border-zinc-200 text-zinc-900'
-                    : 'font-serif text-base italic bg-white border-black text-black font-medium'
-                }`}
-              >
-                {message.text}
-              </div>
-            </motion.div>
-          ))}
-        </AnimatePresence>
+      {/* ── Main two-column body ────────────────────────────────────────────── */}
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '1fr 1fr', overflow: 'hidden' }}>
 
-        {isConfirmingPlace && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="p-4 border border-blue-500 bg-blue-50/20 text-blue-900 font-mono text-xs flex flex-col gap-3"
+        {/* LEFT: heatmap */}
+        <div style={{ borderRight: '1px solid #000', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div style={{ flex: 1, overflowY: 'auto', overflowX: 'auto' }}>
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '70px repeat(64, 9px)',
+              gap: '1px', padding: '8px',
+              minWidth: 'max-content',
+              // CSS filter only applies in non-overlay modes
+              filter: (colorFilter !== 'none' && colorFilter !== 'blue-overlay') ? colorFilter : undefined,
+            }}>
+              {tokens.map((token, ti) => {
+                const isLockedRow = lockedToken?.tokenIdx === ti
+                const isHoveredRow = hoveredRow === ti
+                // A row is "revealed" (shows true color) when:
+                // - blue-overlay is ON and this row is hovered or locked
+                // - blue-overlay is OFF (all rows always show true color)
+                const isRevealed = colorFilter !== 'blue-overlay' || isHoveredRow || isLockedRow
+
+                return (
+                  <React.Fragment key={ti}>
+                    {/* Token label */}
+                    <div
+                      onMouseEnter={() => setHoveredRow(ti)}
+                      onMouseLeave={() => setHoveredRow(null)}
+                      style={{
+                        fontSize: '7px', display: 'flex', alignItems: 'center',
+                        paddingRight: '4px', overflow: 'hidden', textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap', height: '13px',
+                        color: isLockedRow ? '#3333cc' : isHoveredRow ? '#000' : '#555',
+                        fontWeight: (isLockedRow || isHoveredRow) ? 'bold' : 'normal',
+                        cursor: 'default',
+                      }}>
+                      {token.text}
+                    </div>
+                    {/* Embedding cells */}
+                    {token.embeddings.map((val, di) => {
+                      const isLockedCell = lockedToken?.tokenIdx === ti && lockedToken?.dimension === di
+                      // True color of this cell
+                      const trueColor = getInterpolatedColor(val)
+                      // Blue-tinted color: shift everything toward a deep blue
+                      const blueColor = '#4048D9'
+
+                      return (
+                        <div
+                          key={di}
+                          onMouseEnter={() => {
+                            setHoveredRow(ti)
+                            setHoveredDim(di)
+                            setSelectedToken({ token: token.text, tokenIdx: ti, value: val, dimension: di })
+                            const msg = getHoverMessage(token.text, val, di)
+                            setTooltip({ x: 0, y: 0, msg })
+                          }}
+                          onMouseMove={e => {
+                            const msg = getHoverMessage(token.text, val, di)
+                            setTooltip({ x: e.clientX, y: e.clientY, msg })
+                          }}
+                          onMouseLeave={() => {
+                            setHoveredRow(null)
+                            setHoveredDim(null)
+                            if (!lockedToken) setSelectedToken(null)
+                            setTooltip(null)
+                          }}
+                          onClick={() => handleCellClick(token.text, ti, di, val)}
+                          style={{
+                            width: '9px', height: '13px',
+                            // Always show true color underneath
+                            backgroundColor: trueColor,
+                            position: 'relative',
+                            cursor: 'pointer',
+                            outline: isLockedCell ? '2px solid #000' : 'none',
+                            outlineOffset: '-1px',
+                            // Dim non-locked rows when something is locked
+                            opacity: lockedToken && !isLockedRow ? 0.5 : 1,
+                            // Column highlight via box shadow
+                            boxShadow: hoveredDim === di ? 'inset 0 0 0 1px rgba(0,0,0,0.4)' : 'none',
+                            transition: 'opacity 0.15s, box-shadow 0.1s',
+                          }}
+                        >
+                          {/* Multiply-style blue overlay — covers non-revealed rows in focus mode */}
+                          {colorFilter === 'blue-overlay' && !isRevealed && (
+                            <div style={{
+                              position: 'absolute', inset: 0,
+                              backgroundColor: '#6060ff',
+                              mixBlendMode: 'multiply',
+                              pointerEvents: 'none',
+                              transition: 'opacity 0.2s ease',
+                              opacity: 0.85,
+                            }} />
+                          )}
+                        </div>
+                      )
+                    })}
+                  </React.Fragment>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Info bar */}
+          <div style={{ borderTop: '1px solid #000', display: 'flex', flexShrink: 0, minHeight: '44px' }}>
+            {activeToken ? (
+              <>
+                <div style={{ padding: '6px 12px', borderRight: '1px solid #000', background: '#000', minWidth: '110px' }}>
+                  <div style={{ fontSize: '7px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>Token name</div>
+                  <div style={{ fontSize: '10px', color: '#6BA633', fontWeight: 'bold' }}>{activeToken.token}</div>
+                </div>
+                <div style={{ padding: '6px 12px', borderRight: '1px solid #000' }}>
+                  <div style={{ fontSize: '7px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>N Token</div>
+                  <div style={{ fontSize: '10px' }}>{activeToken.tokenIdx}/{tokens.length}</div>
+                </div>
+                <div style={{ padding: '6px 12px', borderRight: '1px solid #000', minWidth: '180px' }}>
+                  <div style={{ fontSize: '7px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>
+                    D{activeToken.dimension} — what this column tracks
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#6BA633', fontWeight: 'bold', textTransform: 'lowercase' }}>
+                    {DIMENSION_CONCEPTS[activeToken.dimension] ?? 'unknown pattern'}
+                  </div>
+                </div>
+                <div style={{ padding: '6px 12px' }}>
+                  <div style={{ fontSize: '7px', color: '#888', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '2px' }}>Activation</div>
+                  <div style={{ fontSize: '10px', color: getActivationColor(activeToken.value), fontWeight: 'bold' }}>{activeToken.value.toFixed(2)}</div>
+                </div>
+                {lockedToken && (
+                  <div style={{ padding: '6px 12px', marginLeft: 'auto', display: 'flex', alignItems: 'center' }}>
+                    <button onClick={() => setLockedToken(null)} style={{ fontSize: '8px', color: '#888', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline', fontFamily: "'JetBrains Mono', monospace", textTransform: 'uppercase', letterSpacing: '1px' }}>
+                      UNLOCK ROW
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div style={{ padding: '8px 12px', fontSize: '9px', color: '#aaa', fontStyle: 'italic', display: 'flex', alignItems: 'center' }}>
+                Hover over a cell to explore · click to lock a token row
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* RIGHT: transcript */}
+        <div style={{ overflowY: 'auto', padding: '24px 28px' }}>
+          <div style={{ fontFamily: 'Georgia, serif', fontSize: '13pt', lineHeight: 1.8, color: '#000' }}>
+            {transcriptLines.map((line, i) => {
+              const words = line.split(' ')
+              const highlightIdx = words.findIndex(w => w.length > 6)
+              return (
+                <p key={i} style={{ marginBottom: '10px' }}>
+                  {words.map((word, wi) => (
+                    <span key={wi} style={{ color: wi === highlightIdx ? '#6BA633' : '#000' }}>
+                      {word}{wi < words.length - 1 ? ' ' : ''}
+                    </span>
+                  ))}
+                </p>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Bottom action bar ───────────────────────────────────────────────── */}
+      <div style={{
+        borderTop: '1px solid #000',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '0 20px', height: '52px',
+        background: '#fff', flexShrink: 0,
+      }}>
+        <button
+          onClick={handleExportPNG}
+          disabled={isExporting}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '8px',
+            border: '1px solid #000', background: '#fff', padding: '8px 16px',
+            fontFamily: "'JetBrains Mono', monospace", fontSize: '10px',
+            textTransform: 'uppercase', letterSpacing: '1px', cursor: 'pointer',
+          }}
+        >
+          <Download size={14} /> {isExporting ? 'EXPORTING...' : 'DOWNLOAD PNG'}
+        </button>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+          <button
+            onClick={() => navigate('/map')}
+            style={{
+              border: '1px solid #ddd', background: '#fff', padding: '8px 24px',
+              fontFamily: "'JetBrains Mono', monospace", fontSize: '10px',
+              textTransform: 'uppercase', letterSpacing: '1px', cursor: 'pointer', color: '#888',
+            }}
           >
-            <div className="flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-blue-600 animate-pulse" />
-              <span className="font-bold">LOCATION EXTRACTION DIAGNOSTIC</span>
-            </div>
-            <p>The AI system mapped your travel subject to the following vocabulary entity token:</p>
-            <div className="flex items-center gap-2">
-              <input
-                id="entity_location_input"
-                type="text"
-                value={extractedPlace}
-                onChange={(e) => setExtractedPlace(e.target.value)}
-                className="font-serif italic text-sm border border-neutral-400 bg-white px-2 py-1 flex-1 text-black outline-none"
-                placeholder="Type location manually"
-              />
-              <button
-                id="confirm_location_btn"
-                onClick={handleConfirmLocation}
-                className="high-density-btn py-1 px-3 text-[10px]"
-              >
-                Confirm Word
-              </button>
-            </div>
-            <span className="text-[10px] text-zinc-500">Correct this word before the system generates the subword sensor arrays.</span>
-          </motion.div>
-        )}
-
-        <div ref={chatEndRef} />
+            SEE ALL MEMORIES
+          </button>
+          <button
+            onClick={onReset}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              border: 'none', background: 'none',
+              fontFamily: "'JetBrains Mono', monospace", fontSize: '10px',
+              textTransform: 'uppercase', letterSpacing: '1px', cursor: 'pointer', color: '#888',
+              textDecoration: 'underline',
+            }}
+          >
+            <RefreshCw size={12} /> TRANSCRIBE A NEW MEMORY
+          </button>
+        </div>
       </div>
 
-      {!isConfirmingPlace && (
-        <form onSubmit={handleSubmit} className="border-t border-black pt-4 flex flex-col gap-3">
-          {isRecording && (
-            <div className="flex items-center justify-center gap-1.5 p-2 bg-zinc-50 border border-zinc-200">
-              <span className="text-[9px] font-mono text-zinc-500 mr-2 uppercase tracking-widest animate-pulse">RECORDING AUDIO STREAM:</span>
-              <div className="flex items-end gap-1 h-6">
-                {audioSinks.map((height, i) => (
-                  <div
-                    key={i}
-                    className="w-1 bg-[#4048D9] transition-all duration-75"
-                    style={{ height: `${height}px` }}
-                  />
-                ))}
-              </div>
+      {/* ── System footer ───────────────────────────────────────────────────── */}
+      <div style={{
+        borderTop: '1px solid #eee', display: 'flex', justifyContent: 'space-between',
+        padding: '3px 20px', background: '#fff', flexShrink: 0,
+      }}>
+        <span style={{ fontSize: '8px', color: '#aaa', textTransform: 'uppercase', letterSpacing: '1px' }}>
+          SYSTEM STATUS: EMBEDDINGS_EXTRACTED | DIM_X: 64 | DIM_Y: {stats.totalTokens} TOKENS | LATENCY: 24MS
+        </span>
+        <span style={{ fontSize: '8px', color: '#aaa', textTransform: 'uppercase', letterSpacing: '1px' }}>
+          SAMPLES_LOADED // TRIAL_9883_ACTIVE
+        </span>
+      </div>
+
+      {/* ── Floating tooltip ────────────────────────────────────────────────── */}
+      {tooltip && (
+        <div style={{
+          position: 'fixed',
+          left: Math.min(tooltip.x + 16, window.innerWidth - 320),
+          top: Math.max(tooltip.y - 80, 8),
+          width: '300px',
+          background: '#000', color: '#fff',
+          padding: '12px 14px',
+          fontSize: '10px', lineHeight: 1.65,
+          fontFamily: "'JetBrains Mono', monospace",
+          pointerEvents: 'none',
+          zIndex: 999,
+          boxShadow: '0 4px 24px rgba(0,0,0,0.35)',
+        }}>
+          {/* Relevance badge */}
+          <div style={{
+            display: 'inline-block',
+            fontSize: '8px', letterSpacing: '1.5px', textTransform: 'uppercase',
+            padding: '2px 7px', marginBottom: '8px',
+            background: tooltip.msg.relevance === 'high' ? '#4048D9' : '#444',
+            color: '#fff',
+          }}>
+            {tooltip.msg.relevance === 'high' ? '● RELEVANT TO MODEL' : '○ LESS RELEVANT'}
+          </div>
+
+          {/* Dimension concept label */}
+          {selectedToken && (
+            <div style={{
+              fontSize: '8px', color: '#6BA633', textTransform: 'uppercase',
+              letterSpacing: '1px', marginBottom: '8px',
+            }}>
+              DIMENSION {selectedToken.dimension} — {(DIMENSION_CONCEPTS[selectedToken.dimension] ?? 'unknown pattern').toUpperCase()}
             </div>
           )}
 
-          {speechError && (
-            <div className="text-[10px] font-mono text-amber-700 bg-amber-50/50 p-2 border border-amber-200 flex items-center gap-2">
-              <HelpCircle className="w-3.5 h-3.5" />
-              <span>{speechError}</span>
-            </div>
-          )}
-
-          <div className="flex gap-2 relative">
-            <button
-              id="voice_recording_btn"
-              type="button"
-              onClick={toggleRecording}
-              className={`p-3 border outline-none cursor-pointer transition-all active:scale-95 duration-100 flex items-center justify-center ${
-                isRecording
-                  ? 'bg-red-500 border-red-500 text-white hover:bg-red-600'
-                  : 'bg-white border-black text-black hover:bg-neutral-50'
-              }`}
-              title={isRecording ? "Stop voice transmission" : "Speak via Microphone"}
-            >
-              {isRecording ? <MicOff className="w-5 h-5 animate-pulse" /> : <Mic className="w-5 h-5" />}
-            </button>
-
-            <input
-              id="user_response_box"
-              type="text"
-              autoFocus
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              placeholder={isRecording ? "Transcribing speech... or start writing here" : "Type your answer inside here..."}
-              className="flex-1 px-4 py-3 border border-black font-serif italic text-base/relaxed text-black outline-none placeholder:font-mono placeholder:text-neutral-400 focus:bg-zinc-50/40 transition-all"
-            />
-
-            <button
-              id="submit_response_btn"
-              type="submit"
-              disabled={!inputText.trim()}
-              className="high-density-btn px-6 py-3 flex items-center justify-center gap-2"
-            >
-              <span>SEND</span> <Send className="w-3.5 h-3.5" />
-            </button>
+          {/* Main message */}
+          <div style={{ marginBottom: '8px', color: '#eee' }}>
+            {tooltip.msg.main}
           </div>
 
-          <div className="flex justify-between items-center text-[10px] font-mono text-zinc-400 mt-1 px-1">
-            <span className="flex items-center gap-1">
-              <Keyboard className="w-3.5 h-3.5" /> KEYBOARD OR MICROPHONE ACTIVATED
-            </span>
-            <span>PRESS SEND OR ENTER KEY</span>
+          {/* Sub note */}
+          <div style={{
+            paddingTop: '6px', borderTop: '1px solid #333',
+            fontSize: '8px', color: '#888', fontStyle: 'italic',
+          }}>
+            {tooltip.msg.sub}
           </div>
-        </form>
+        </div>
       )}
-
-      <div className="mt-4 pt-3 border-t border-zinc-100 text-[9px] font-mono text-zinc-400 leading-normal text-center sm:text-left">
-        DECISION ARRAYS READY // SENTENCE INPUT AUTOMATICALLY MAPS TO SPATIAL VECTOR SPACE THROUGH WORDPIECE TOKENIZATION.
-      </div>
     </div>
-  );
+  )
 }
