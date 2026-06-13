@@ -7,7 +7,6 @@
   --font-mono: 'JetBrains Mono', monospace;
 }
 
-/* Base style resets following High Density constraints */
 body, html {
   background-color: #ffffff !important;
   color: #111111;
@@ -16,7 +15,7 @@ body, html {
   font-family: var(--font-sans);
 }
 
-/* High Density Custom Buttons Style matching spec */
+/* Buttons */
 .high-density-btn {
   padding: 8px 16px;
   border: 1px solid #111111;
@@ -29,36 +28,16 @@ body, html {
   transition: all 150ms ease-in-out;
   cursor: pointer;
 }
+.high-density-btn:hover { background: #111111; color: #ffffff; }
+.high-density-btn:disabled { border-color: #e0e0e0; color: #999999; background: transparent; cursor: not-allowed; }
 
-.high-density-btn:hover {
-  background: #111111;
-  color: #ffffff;
-}
+/* Scrollbar */
+.scrollbar-thin::-webkit-scrollbar { width: 4px; height: 4px; }
+.scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+.scrollbar-thin::-webkit-scrollbar-thumb { background: #e0e0e0; border-radius: 0px; }
+.scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #111111; }
 
-.high-density-btn:disabled {
-  border-color: #e0e0e0;
-  color: #999999;
-  background: transparent;
-  cursor: not-allowed;
-}
-
-/* Custom scrollbar adjustments for sleek panels */
-.scrollbar-thin::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
-}
-.scrollbar-thin::-webkit-scrollbar-track {
-  background: transparent;
-}
-.scrollbar-thin::-webkit-scrollbar-thumb {
-  background: #e0e0e0;
-  border-radius: 0px;
-}
-.scrollbar-thin::-webkit-scrollbar-thumb:hover {
-  background: #111111;
-}
-
-/* html2canvas safe HEX classes overriding default oklch color attributes */
+/* html2canvas-safe HEX overrides */
 .hc-bg-white { background-color: #ffffff !important; }
 .hc-bg-zinc-50-20 { background-color: rgba(250, 250, 250, 0.2) !important; }
 .hc-bg-zinc-50 { background-color: #fafafa !important; }

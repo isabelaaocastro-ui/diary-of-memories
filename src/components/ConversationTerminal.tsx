@@ -11,6 +11,7 @@ interface ConversationTerminalProps {
     senses: string;
     title: string;
     fullCombinedText: string;
+    countryCode: string;
   }) => void;
 }
 
@@ -153,6 +154,22 @@ export default function ConversationTerminal({ onComplete }: ConversationTermina
     return tokens[0] || 'the journey';
   };
 
+  const getCountryCode = async (placeName: string): Promise<string> => {
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(placeName)}&format=json&limit=1&addressdetails=1`,
+      { headers: { 'User-Agent': 'map-of-memories-app' } }
+    );
+    const data = await res.json();
+    if (data.length > 0 && data[0].address?.country_code) {
+      return data[0].address.country_code.toUpperCase();
+    }
+  } catch (err) {
+    console.warn('Country code lookup failed:', err);
+  }
+  return '??';
+};
+
   const speakQuestion = (text: string) => {
     if ('speechSynthesis' in window) {
       window.speechSynthesis.cancel();
@@ -238,6 +255,8 @@ export default function ConversationTerminal({ onComplete }: ConversationTermina
         Title: ${newAnswers.title}.
       `;
 
+      const countryCode = await getCountryCode(newAnswers.place);
+
       onComplete({
         place: newAnswers.place,
         reason: newAnswers.reason,
@@ -245,7 +264,8 @@ export default function ConversationTerminal({ onComplete }: ConversationTermina
         visual: newAnswers.visual,
         senses: newAnswers.senses,
         title: newAnswers.title,
-        fullCombinedText: combined
+        fullCombinedText: combined,
+        countryCode
       });
     }
   };
